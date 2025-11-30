@@ -1,7 +1,13 @@
-.env
+venv/
 __pycache__/
 *.pyc
+*.log
+*.json
+*.tmp
 *.csv
 *.pbix
 .DS_Store
-venv/
+.envx
+.pem
+.vscode/
+.ipynb_checkpoints/
