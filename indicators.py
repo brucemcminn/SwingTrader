@@ -34,78 +34,86 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> 
     return atr_val
 
 
+def _rma(series: pd.Series, length: int) -> pd.Series:
+    """
+    Wilder's RMA (used by TradingView for ATR).
+    """
+    return series.ewm(alpha=1 / length, adjust=False).mean()
+
+
 def supertrend(df: pd.DataFrame, length: int = 10, multiplier: float = 3.0) -> pd.DataFrame:
     """
-    Simple Supertrend implementation.
+    Supertrend implementation closely matching TradingView's built-in version.
 
-    Returns a copy of df with two extra columns:
-      - 'st'     : supertrend line (float)
-      - 'st_dir' : +1 for uptrend, -1 for downtrend (int)
+    Expects columns: 'High', 'Low', 'Close'
+    Adds columns:
+      - 'st'     : Supertrend line
+      - 'st_dir' : +1 for uptrend (green), -1 for downtrend (red)
     """
-    df = df.copy()
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    close = df["Close"].astype(float)
 
-    # Convert columns to flat 1-D NumPy arrays no matter how yfinance/pandas packs them
-    high_arr = np.asarray(df["High"], dtype="float64").reshape(-1)
-    low_arr = np.asarray(df["Low"], dtype="float64").reshape(-1)
-    close_arr = np.asarray(df["Close"], dtype="float64").reshape(-1)
+    # True Range
+    prev_close = close.shift(1)
+    tr1 = (high - low).abs()
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    # ATR using RMA (Wilder)
+    atr = _rma(tr, length)
+
+    # Basic bands
+    hl2 = (high + low) / 2.0
+    upper_band = hl2 + multiplier * atr
+    lower_band = hl2 - multiplier * atr
 
     n = len(df)
+    final_upper = upper_band.copy()
+    final_lower = lower_band.copy()
+    direction = pd.Series(index=df.index, dtype="int64")
+
+    # Initialize direction
     if n == 0:
-        df["st"] = np.nan
-        df["st_dir"] = 0
-        return df
+        out = df.copy()
+        out["st"] = np.nan
+        out["st_dir"] = 0
+        return out
 
-    # Midpoint of high/low
-    hl2 = (high_arr + low_arr) / 2.0
+    direction.iloc[0] = 1  # start as uptrend by convention
 
-    # Use Pandas rolling to get a simple ATR-like band, but start from 1-D arrays
-    high_s = pd.Series(high_arr)
-    low_s = pd.Series(low_arr)
-
-    band_range = (
-        high_s.rolling(length).max()
-        - low_s.rolling(length).min()
-    ).rolling(length).mean().to_numpy()
-
-    upperband = hl2 + multiplier * band_range
-    lowerband = hl2 - multiplier * band_range
-
-    st = np.full(n, np.nan, dtype="float64")
-    direction = np.zeros(n, dtype="int64")
-
-    # Seed first value
-    st[0] = hl2[0]
-    direction[0] = 1
-
+    # Iterate over bars to refine bands and determine trend
     for i in range(1, n):
-        prev_st = st[i - 1]
-        curr_close = close_arr[i]
+        prev = i - 1
 
-        ub = upperband[i]
-        lb = lowerband[i]
-
-        # If bands are NaN early on, fall back to previous ST
-        if np.isnan(ub):
-            ub = prev_st
-        if np.isnan(lb):
-            lb = prev_st
-
-        # If close or prev_st is NaN, just carry forward
-        if np.isnan(curr_close) or np.isnan(prev_st):
-            st[i] = prev_st
-            direction[i] = direction[i - 1]
-            continue
-
-        # Pure scalar comparison
-        if curr_close > prev_st:
-            # Uptrend
-            st[i] = max(lb, prev_st)
-            direction[i] = 1
+        # Refine upper band
+        if (upper_band.iloc[i] < final_upper.iloc[prev]) or (close.iloc[prev] > final_upper.iloc[prev]):
+            final_upper.iloc[i] = upper_band.iloc[i]
         else:
-            # Downtrend
-            st[i] = min(ub, prev_st)
-            direction[i] = -1
+            final_upper.iloc[i] = final_upper.iloc[prev]
 
-    df["st"] = st
-    df["st_dir"] = direction
-    return df
+        # Refine lower band
+        if (lower_band.iloc[i] > final_lower.iloc[prev]) or (close.iloc[prev] < final_lower.iloc[prev]):
+            final_lower.iloc[i] = lower_band.iloc[i]
+        else:
+            final_lower.iloc[i] = final_lower.iloc[prev]
+
+        # Direction flip logic
+        if direction.iloc[prev] == -1 and close.iloc[i] > final_upper.iloc[i]:
+            direction.iloc[i] = 1
+        elif direction.iloc[prev] == 1 and close.iloc[i] < final_lower.iloc[i]:
+            direction.iloc[i] = -1
+        else:
+            direction.iloc[i] = direction.iloc[prev]
+
+    # Supertrend line = lower band in uptrend, upper band in downtrend
+    st = pd.Series(index=df.index, dtype="float64")
+    st[direction == 1] = final_lower[direction == 1]
+    st[direction == -1] = final_upper[direction == -1]
+
+    out = df.copy()
+    out["st"] = st
+    out["st_dir"] = direction
+    return out
+
