@@ -114,11 +114,6 @@ def main():
 
             df = add_indicators(df)
 
-            # DEBUG: print NVDA Supertrend internals
-            if sym == "NVDA":
-                print("\n=== NVDA DEBUG ===")
-                print(df.tail(8)[["Close", "High", "Low", "st", "st_dir"]])
-
             if is_long_candidate(df):
                 last = df.iloc[-1]
                 candidates.append(
